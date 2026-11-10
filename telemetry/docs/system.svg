@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 400" width="980" height="400" font-family="Arial, sans-serif" font-size="13">
+  <title>Архитектура: разведчик — ретранслятор — наземная станция</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1d2329"/></marker>
+  </defs>
+  <rect width="980" height="400" fill="#fff"/>
+  <text x="20" y="32" font-size="20" font-weight="bold" fill="#1d2329">Архитектура системы</text>
+
+  <rect x="20" y="70" width="200" height="150" rx="10" fill="#ebfbee" stroke="#2f9e44" stroke-width="2"/>
+  <text x="120" y="96" text-anchor="middle" font-weight="bold" font-size="15">Разведчик</text>
+  <text x="120" y="114" text-anchor="middle" fill="#5b6570" font-size="11">на DJI Flip (позже — микродрон)</text>
+  <text x="34" y="140">XIAO ESP32S3 Sense</text>
+  <text x="34" y="158">LD2450, MPU-6050</text>
+  <text x="34" y="180">решение «человек» на борту,</text>
+  <text x="34" y="196">карта, видео (MJPEG)</text>
+  <text x="34" y="212" fill="#5b6570" font-size="11">rescue_scout.ino</text>
+
+  <rect x="290" y="70" width="190" height="150" rx="10" fill="#fff4e6" stroke="#d9480f" stroke-width="2"/>
+  <text x="385" y="96" text-anchor="middle" font-weight="bold" font-size="15">Ретранслятор</text>
+  <text x="385" y="114" text-anchor="middle" fill="#5b6570">ESP32 на Mavic 3</text>
+  <text x="304" y="140">сеть «scout-net»</text>
+  <text x="304" y="158">192.168.5.1:9000</text>
+  <text x="304" y="180">TCP-прокси в сеть роутера</text>
+  <text x="304" y="212" fill="#5b6570" font-size="11">esp/relay/relay.ino</text>
+
+  <rect x="550" y="70" width="180" height="150" rx="10" fill="#e7f5ff" stroke="#1c7ed6" stroke-width="2"/>
+  <text x="640" y="96" text-anchor="middle" font-weight="bold" font-size="15">Wi-Fi роутер</text>
+  <text x="640" y="114" text-anchor="middle" fill="#5b6570">2,4 ГГц, на земле</text>
+  <text x="564" y="140">ноутбук в его сети,</text>
+  <text x="564" y="158">iot-go, TCP-порт</text>
+  <text x="564" y="180">или ESP-шлюз по USB</text>
+  <text x="564" y="212" fill="#5b6570" font-size="11">(esp/gateway — без роутера)</text>
+
+  <rect x="790" y="60" width="170" height="320" rx="10" fill="#f8f9fa" stroke="#495057" stroke-width="2"/>
+  <text x="875" y="86" text-anchor="middle" font-weight="bold" font-size="15">Ноутбук оператора</text>
+  <rect x="805" y="100" width="140" height="70" rx="6" fill="#fff" stroke="#868e96"/>
+  <text x="875" y="124" text-anchor="middle" font-weight="bold">iot-go</text>
+  <text x="875" y="142" text-anchor="middle" font-size="11">TCP-порт устройств</text>
+  
+  <rect x="805" y="195" width="140" height="70" rx="6" fill="#fff" stroke="#868e96"/>
+  <text x="875" y="220" text-anchor="middle" font-weight="bold">веб-клиент</text>
+  <text x="875" y="238" text-anchor="middle" font-size="11">цели, тревога,</text>
+  <text x="875" y="254" text-anchor="middle" font-size="11">курс</text>
+  <rect x="805" y="290" width="140" height="75" rx="6" fill="#fff" stroke="#868e96"/>
+  <text x="875" y="314" text-anchor="middle" font-weight="bold">браузер / VLC</text>
+  <text x="875" y="332" text-anchor="middle" font-size="11">видео через</text>
+  <text x="875" y="348" text-anchor="middle" font-size="11">ретранслятор :8000/№/</text>
+
+  <line x1="220" y1="130" x2="288" y2="130" stroke="#1d2329" stroke-width="2" marker-end="url(#a)"/>
+  <text x="254" y="122" text-anchor="middle" font-size="11">Wi-Fi</text>
+  <line x1="480" y1="130" x2="548" y2="130" stroke="#1d2329" stroke-width="2" marker-end="url(#a)"/>
+  <text x="514" y="122" text-anchor="middle" font-size="11">Wi-Fi</text>
+  <line x1="730" y1="135" x2="803" y2="135" stroke="#1d2329" stroke-width="2" marker-end="url(#a)"/>
+  <text x="766" y="127" text-anchor="middle" font-size="11">Wi-Fi</text>
+  <line x1="875" y1="170" x2="875" y2="193" stroke="#1d2329" stroke-width="2" marker-end="url(#a)"/>
+  
+  
+
+  <path d="M120,220 C120,300 640,300 640,222" fill="none" stroke="#1d2329" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="380" y="292" text-anchor="middle" font-size="12" fill="#5b6570">запасной путь: разведчик напрямую к роутеру, если ретранслятора нет 15 с</text>
+
+  <text x="20" y="340" font-size="12" fill="#1d2329">Кадр везде один: [4 байта длины BigEndian][telemetry.v1.Telemetry], ~5 снимков в секунду. Видео — отдельно, MJPEG по HTTP.</text>
+  <text x="20" y="360" font-size="12" fill="#1d2329">Ретранслятор protobuf не разбирает и раздаёт камеры разведчиков: :8000/1/, :8000/2/ …</text>
+</svg>

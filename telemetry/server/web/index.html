@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Поиск людей</title>
+<style>
+:root {
+  --ground: #1e2833;
+  --panel: #263240;
+  --panel-2: #2d3b4b;
+  --line: #3e4f62;
+  --ink: #e8eef3;
+  --muted: #93a4b4;
+  --rescue: #ff7a1a;
+  --rescue-ink: #1e1206;
+  --ok: #5fc9a8;
+  --warn: #f2c14e;
+  --font: "Bahnschrift", "DIN 2014", "Barlow", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--font); }
+body { font-size: 15px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+
+header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 12px 20px; border-bottom: 1px solid var(--line);
+}
+header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .01em; }
+.link { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--warn); }
+header .spacer { flex: 1; }
+.btn {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px 12px; cursor: pointer; font-size: 14px;
+}
+.btn:hover { border-color: var(--muted); }
+.btn[aria-pressed="true"] { border-color: var(--ink); background: var(--line); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Полоса тревоги: единственное место, где оранжевый занимает много площади */
+#alarmbar { display: none; background: var(--rescue); color: var(--rescue-ink); padding: 14px 20px; }
+#alarmbar.on { display: block; }
+#alarmbar .big { font-size: 22px; font-weight: 700; line-height: 1.2; }
+#alarmbar .sub { font-size: 15px; margin-top: 2px; }
+#alarmbar a { color: var(--rescue-ink); font-weight: 600; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; padding: 20px; align-items: start; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+
+#devices { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 20px; }
+@media (max-width: 440px) { #devices { grid-template-columns: 1fr; } }
+
+.empty { color: var(--muted); padding: 40px 8px; max-width: 60ch; }
+.empty strong { color: var(--ink); font-weight: 600; }
+
+.dev { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.dev.alarm { border-color: var(--rescue); box-shadow: inset 0 0 0 1px var(--rescue); }
+.dev.offline { opacity: .6; }
+.dev-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 14px 8px; flex-wrap: wrap; }
+.dev-name { font-size: 18px; font-weight: 600; }
+.dev-state { font-size: 14px; color: var(--muted); }
+.dev-state.alarm { color: var(--rescue); font-weight: 600; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 0 14px 10px; font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.facts .bad b { color: var(--warn); }
+canvas { display: block; width: 100%; aspect-ratio: 4 / 3; background: var(--ground); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.trk-head { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; padding: 10px 14px 6px; font-size: 13px; color: var(--muted); }
+.trk-head b { color: var(--ink); font-weight: 500; }
+.trk-head .t { font-size: 15px; font-weight: 600; color: var(--ink); }
+.trk[hidden], .trk-head[hidden] { display: none; }
+.dev-foot { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px 12px; }
+.note { font-size: 13px; color: var(--muted); }
+
+aside h2 { font-size: 16px; font-weight: 600; margin: 0 0 10px; }
+#journal { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+#journal li { background: var(--panel); border-left: 3px solid var(--rescue); border-radius: 0; padding: 10px 12px; }
+#journal li.cleared { border-left-color: var(--line); color: var(--muted); }
+#journal .when { font-size: 13px; color: var(--muted); }
+#journal .what { font-weight: 600; }
+#journal li.cleared .what { font-weight: 500; }
+#journal a { color: var(--ink); }
+#journal .none { border: none; background: none; padding: 0; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Поиск людей</h1>
+  <span class="link"><span id="linkdot" class="dot"></span><span id="linktext">Подключаюсь к серверу</span></span>
+  <span class="spacer"></span>
+  <button id="sound" class="btn" aria-pressed="false">Включить звук тревоги</button>
+</header>
+
+<div id="alarmbar" role="alert" aria-live="assertive">
+  <div class="big" id="alarmbig"></div>
+  <div class="sub" id="alarmsub"></div>
+</div>
+
+<main>
+  <section id="devices" aria-label="Устройства">
+    <p class="empty" id="nodevices"><strong>Устройств пока нет.</strong><br>
+      Включите ESP с радаром: она подключится к сети шлюза и появится здесь через несколько секунд.
+      Если ничего не происходит — проверьте, что сервер запущен с портом шлюза (--serial) или что устройство в одной сети с этим ПК.</p>
+  </section>
+  <aside>
+    <h2>Журнал тревог</h2>
+    <ol id="journal"><li class="none">Тревог не было.</li></ol>
+  </aside>
+</main>
+
+<script>
+"use strict";
+const RANGE = 6;            // м — дальность LD2450
+const FOV = 60;             // ° — половина сектора обзора
+const STALE_MS = 3000;
+const devices = new Map();  // id -> состояние карточки
+const API = "/api/v1";      // страница — пример клиента HTTP API (api/openapi.yaml)
+let alarms = [];            // Alarm, новые первыми
+
+const nf1 = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtM = d => nf1.format(d) + " м";
+const fmtAng = a => (a > 0 ? "+" : a < 0 ? "−" : "") + Math.abs(Math.round(a)) + "°";
+const wrap = a => ((a % 360) + 360) % 360;
+const rumb = a => ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"][Math.round(wrap(a) / 45) % 8];
+const clock = iso => new Date(iso).toLocaleTimeString("ru-RU");
+const kindText = k => k === "moving" ? "движется" : k === "stationary" ? "неподвижен" : "";
+const mapUrl = p => `https://yandex.ru/maps/?pt=${p.lon.toFixed(6)},${p.lat.toFixed(6)}&z=19&l=sat`;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ---------- звук ----------
+let audio = null;
+document.getElementById("sound").addEventListener("click", e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  if (on && !audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+  e.currentTarget.setAttribute("aria-pressed", on);
+  e.currentTarget.textContent = on ? "Звук тревоги включён" : "Включить звук тревоги";
+  if (on) beep();
+});
+function beep() {
+  if (!audio || document.getElementById("sound").getAttribute("aria-pressed") !== "true") return;
+  [0, 0.28].forEach((t, i) => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = i ? 660 : 880; o.type = "square";
+    g.gain.setValueAtTime(0.0001, audio.currentTime + t);
+    g.gain.exponentialRampToValueAtTime(0.25, audio.currentTime + t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + t + 0.24);
+    o.connect(g).connect(audio.destination); o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.26);
+  });
+}
+
+// ---------- карточка устройства ----------
+function card(id) {
+  if (devices.has(id)) return devices.get(id);
+  document.getElementById("nodevices").style.display = "none";
+  const el = document.createElement("article");
+  el.className = "dev";
+  el.innerHTML = `
+    <div class="dev-head"><span class="dev-name"></span><span class="dev-state"></span></div>
+    <div class="facts"></div>
+    <canvas role="img"></canvas>
+    <div class="trk-head" hidden><span class="t">Трек</span><span class="trk-facts"></span></div>
+    <canvas class="trk" role="img" aria-label="Трек передвижения устройства" hidden></canvas>
+    <div class="dev-foot">
+      <button class="btn north" aria-pressed="false">Север вверху</button>
+    </div>`;
+  document.getElementById("devices").appendChild(el);
+  const d = { id, el, info: {}, status: null, tracks: null, tracksRx: 0, alarm: null, northUp: false, trails: new Map(),
+              canvas: el.querySelector("canvas"), path: [], trk: el.querySelector(".trk") };
+  el.querySelector(".dev-name").textContent = id;
+  el.querySelector(".north").addEventListener("click", e => {
+    d.northUp = !d.northUp; e.currentTarget.setAttribute("aria-pressed", d.northUp);
+  });
+  devices.set(id, d);
+  loadPath(d);
+  return d;
+}
+
+// ---------- трек (GET /devices/{id}/path, событие path) ----------
+async function loadPath(d) {
+  try {
+    const r = await fetch(`${API}/devices/${encodeURIComponent(d.id)}/path`);
+    if (r.ok) { const j = await r.json(); d.path = j.points.concat(d.path.filter(p => p.t > (j.points.at(-1) || {}).t)); }
+  } catch (e) { /* сервер ещё не знает устройство — точки придут событиями */ }
+}
+
+// Метры от первой точки трека: x — на восток, y — на север
+function pathXY(d) {
+  const p0 = d.path[0], k = 111195, c = Math.cos(p0.lat * Math.PI / 180);
+  return d.path.map(p => [(p.lon - p0.lon) * k * c, (p.lat - p0.lat) * k, p.heading_deg]);
+}
+
+function drawPath(d) {
+  const has = d.path.length > 0;
+  d.trk.hidden = !has; d.el.querySelector(".trk-head").hidden = !has;
+  if (!has) return;
+  const c = d.trk, ctx = c.getContext("2d");
+  const w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const LINE = css("--line"), MUTED = css("--muted"), INK = css("--ink"), RESCUE = css("--rescue"), OK = css("--ok");
+  const pts = pathXY(d);
+  // Люди этого устройства: точки первого обнаружения из тревог
+  const p0 = d.path[0], k = 111195, cl = Math.cos(p0.lat * Math.PI / 180);
+  const people = alarms.filter(a => a.device_id === d.id && a.target_position)
+    .map(a => [(a.target_position.lon - p0.lon) * k * cl, (a.target_position.lat - p0.lat) * k, a.active]);
+  const all = pts.concat(people);
+  let x0 = Math.min(...all.map(p => p[0])), x1 = Math.max(...all.map(p => p[0]));
+  let y0 = Math.min(...all.map(p => p[1])), y1 = Math.max(...all.map(p => p[1]));
+  const span = Math.max(x1 - x0, y1 - y0, 4), pad = 26;
+  const scale = Math.min((w - 2 * pad) / span, (h - 2 * pad) / span);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const X = x => w / 2 + (x - cx) * scale, Y = y => h / 2 - (y - cy) * scale;
+  // Сетка: 1 м (или 5 м на большом треке)
+  const step = span > 25 ? 5 : 1;
+  ctx.strokeStyle = LINE; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+  for (let gx = Math.ceil((cx - w / 2 / scale) / step) * step; X(gx) < w; gx += step) { ctx.beginPath(); ctx.moveTo(X(gx), 0); ctx.lineTo(X(gx), h); ctx.stroke(); }
+  for (let gy = Math.ceil((cy - h / 2 / scale) / step) * step; Y(gy) > 0; gy += step) { ctx.beginPath(); ctx.moveTo(0, Y(gy)); ctx.lineTo(w, Y(gy)); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+  ctx.font = `12px ${css("--font")}`; ctx.fillStyle = MUTED; ctx.textBaseline = "top";
+  ctx.fillText(`сетка ${step} м · север вверху`, 8, 6);
+  // Линия трека
+  ctx.strokeStyle = OK; ctx.lineWidth = 2.5; ctx.lineJoin = "round";
+  ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))); ctx.stroke();
+  // Старт
+  ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(X(pts[0][0]), Y(pts[0][1]), 4, 0, 7); ctx.fill();
+  ctx.textBaseline = "bottom"; ctx.fillText("старт", X(pts[0][0]) + 7, Y(pts[0][1]) - 3);
+  // Люди
+  for (const [x, y, active] of people) {
+    ctx.fillStyle = RESCUE; ctx.globalAlpha = active ? 1 : 0.5;
+    ctx.beginPath(); ctx.arc(X(x), Y(y), 6, 0, 7); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  // Дрон сейчас: треугольник по курсу
+  const [lx, ly, hd] = pts.at(-1);
+  ctx.save(); ctx.translate(X(lx), Y(ly)); ctx.rotate(((hd ?? 0) * Math.PI) / 180);
+  ctx.fillStyle = hd == null ? MUTED : INK;
+  ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(7, 7); ctx.lineTo(0, 3); ctx.lineTo(-7, 7); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  // Цифры
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  const facts = `пройдено <b>${fmtM(len)}</b> · от старта <b>${fmtM(Math.hypot(lx, ly))}</b>` +
+    (hd != null ? ` · смотрит <b>${Math.round(hd)}° ${rumb(hd)}</b>` : "") + (people.length ? ` · людей на треке <b>${people.length}</b>` : "");
+  const f = d.el.querySelector(".trk-facts");
+  if (f._html !== facts) { f.innerHTML = facts; f._html = facts; }
+}
+
+function renderFacts(d) {
+  const s = d.status, online = d.info.online !== false;
+  d.el.classList.toggle("offline", !online);
+  d.el.classList.toggle("alarm", !!d.alarm);
+  const st = d.el.querySelector(".dev-state");
+  st.className = "dev-state" + (d.alarm ? " alarm" : "");
+  st.textContent = !online ? "не на связи" : d.alarm ? "человек обнаружен" : d.tracks && d.tracks.learning_background ? "запоминает фон" : "поиск";
+  const f = [];
+  if (s) {
+    f.push(s.radar_ok ? ["Радар", "работает"] : ["Радар", "нет данных", true]);
+    f.push(s.position ? (s.satellites ? ["GPS", `${s.satellites} спутн.`] : ["Место", "по одометрии"]) : ["GPS", "нет координат", true]);
+    f.push(s.heading_deg != null ? ["Радар смотрит", `${Math.round(s.heading_deg)}° ${rumb(s.heading_deg)}`] : ["Компас", "нет курса", true]);
+    f.push(["Wi-Fi", `${s.wifi_rssi_dbm} дБм`]);
+  }
+  if (d.tracks && d.tracks.background_cells) f.push(["Фон", `${d.tracks.background_cells} клеток`]);
+  d.el.querySelector(".facts").innerHTML = f.map(([k, v, bad]) => `<span class="${bad ? "bad" : ""}">${k}: <b>${v}</b></span>`).join("");
+  const north = d.el.querySelector(".north");
+  north.disabled = !(s && s.heading_deg != null);
+  if (north.disabled && d.northUp) { d.northUp = false; north.setAttribute("aria-pressed", false); }
+}
+
+// ---------- рисование радара ----------
+function draw(d, now) {
+  const c = d.canvas, ctx = c.getContext("2d");
+  const w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const LINE = css("--line"), MUTED = css("--muted"), INK = css("--ink"), RESCUE = css("--rescue"), WARN = css("--warn");
+  const heading = d.status && d.status.heading_deg != null ? d.status.heading_deg : null;
+  const north = d.northUp && heading != null;
+
+  // Геометрия: «радар вверх» — радар внизу по центру; «север вверху» — радар в центре
+  let ox, oy, scale, rot;
+  if (north) { ox = w / 2; oy = h / 2; scale = (Math.min(w, h) / 2 - 22) / RANGE; rot = heading; }
+  else { ox = w / 2; oy = h - 18; scale = Math.min((h - 40) / RANGE, (w / 2 - 16) / (RANGE * Math.sin(FOV * Math.PI / 180))); rot = 0; }
+  const toXY = (dist, angDeg) => {
+    const a = (angDeg + rot) * Math.PI / 180;
+    return [ox + dist * scale * Math.sin(a), oy - dist * scale * Math.cos(a)];
+  };
+
+  // Поле зрения радара
+  ctx.fillStyle = "rgba(147,164,180,0.07)";
+  ctx.beginPath(); ctx.moveTo(ox, oy);
+  ctx.arc(ox, oy, RANGE * scale, (-FOV + rot - 90) * Math.PI / 180, (FOV + rot - 90) * Math.PI / 180);
+  ctx.closePath(); ctx.fill();
+
+  // Кольца дальности — как горизонтали на карте
+  ctx.lineWidth = 1; ctx.font = `12px ${css("--font")}`; ctx.textBaseline = "middle";
+  for (let r = 1; r <= RANGE; r++) {
+    ctx.strokeStyle = LINE; ctx.setLineDash(r % 2 ? [3, 5] : []);
+    ctx.beginPath();
+    if (north) ctx.arc(ox, oy, r * scale, 0, Math.PI * 2);
+    else ctx.arc(ox, oy, r * scale, (-FOV - 90) * Math.PI / 180, (FOV - 90) * Math.PI / 180);
+    ctx.stroke();
+    if (r % 2 === 0 && (north || r < RANGE)) {
+      // подписи колец: в «север вверху» — позади радара, где целей быть не может
+      const [lx, ly] = north ? toXY(r, 180) : toXY(r, FOV + 4);
+      ctx.fillStyle = MUTED; ctx.textAlign = "left"; ctx.fillText(r + " м", lx + 4, ly + (north ? 8 : 0));
+    }
+  }
+  ctx.setLineDash([]);
+  // Края сектора и ось радара
+  ctx.strokeStyle = LINE;
+  for (const a of [-FOV, FOV]) { const [x, y] = toXY(RANGE, a); ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y); ctx.stroke(); }
+  ctx.setLineDash([2, 6]); { const [x, y] = toXY(RANGE, 0); ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y); ctx.stroke(); } ctx.setLineDash([]);
+
+  // Стороны света в режиме «север вверху»
+  if (north) {
+    ctx.textAlign = "center"; ctx.fillStyle = MUTED;
+    const R = RANGE * scale + 12;
+    [["С", 0], ["В", 90], ["Ю", 180], ["З", 270]].forEach(([t, b]) => {
+      const a = b * Math.PI / 180; ctx.fillStyle = t === "С" ? INK : MUTED;
+      ctx.fillText(t, ox + R * Math.sin(a), oy - R * Math.cos(a));
+    });
+  } else if (heading != null) {
+    ctx.fillStyle = MUTED; ctx.textAlign = "center";
+    const [x, y] = toXY(RANGE, 0); ctx.fillText(`${Math.round(heading)}° ${rumb(heading)}`, x, y + 14);
+  }
+  // Сам радар
+  ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(ox, oy, 4, 0, Math.PI * 2); ctx.fill();
+
+  const tr = d.tracks;
+  const fresh = tr && now - d.tracksRx < STALE_MS;
+  if (fresh) {
+    // Следы
+    for (const t of tr.targets) {
+      const trail = d.trails.get(t.id) || [];
+      const last = trail[trail.length - 1];
+      if (!last || last[0] !== t.distance_m || last[1] !== t.angle_deg) trail.push([t.distance_m, t.angle_deg]);
+      if (trail.length > 25) trail.shift();
+      d.trails.set(t.id, trail);
+    }
+    for (const id of d.trails.keys()) if (!tr.targets.some(t => t.id === id)) d.trails.delete(id);
+    for (const t of tr.targets) {
+      const trail = d.trails.get(t.id);
+      ctx.strokeStyle = t.confirmed ? "rgba(255,122,26,0.45)" : "rgba(147,164,180,0.35)";
+      ctx.lineWidth = 1.5; ctx.beginPath();
+      trail.forEach(([dd, aa], i) => { const [x, y] = toXY(dd, aa); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke();
+    }
+    // Цели: сначала подтверждённые, подписи не налезают друг на друга
+    const pulse = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : (now % 1400) / 1400;
+    const placed = [];
+    const fits = r => r.x >= 2 && r.x + r.w <= w - 2 && r.y >= 2 && r.y + r.h <= h - 2 &&
+                      !placed.some(p => r.x < p.x + p.w && p.x < r.x + r.w && r.y < p.y + p.h && p.y < r.y + r.h);
+    const place = (x, y, lines, required) => {
+      const lw = Math.max(...lines.map(([t, f]) => (ctx.font = f, ctx.measureText(t).width)));
+      const lh = 17 * lines.length;
+      for (const [dx, dy] of [[14, -lh / 2], [-14 - lw, -lh / 2], [14, 10], [14, -lh - 10], [-14 - lw, 10], [-14 - lw, -lh - 10]]) {
+        const r = { x: x + dx, y: y + dy, w: lw, h: lh };
+        if (fits(r)) { placed.push(r); return r; }
+      }
+      if (!required) return null;
+      const r = { x: Math.min(x + 14, w - lw - 2), y: y - lh / 2, w: lw, h: lh }; placed.push(r); return r;
+    };
+    const sorted = [...tr.targets].sort((a, b) => b.confirmed - a.confirmed);
+    for (const t of sorted) {                       // точки целей тоже считаются занятым местом
+      const [x, y] = toXY(t.distance_m, t.angle_deg); placed.push({ x: x - 9, y: y - 9, w: 18, h: 18 });
+    }
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    for (const t of sorted) {
+      const [x, y] = toXY(t.distance_m, t.angle_deg);
+      if (t.confirmed) {
+        if (pulse) { ctx.strokeStyle = `rgba(255,122,26,${1 - pulse})`; ctx.lineWidth = 2;
+                     ctx.beginPath(); ctx.arc(x, y, 8 + pulse * 16, 0, Math.PI * 2); ctx.stroke(); }
+        ctx.fillStyle = RESCUE; ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
+        const b = t.bearing_deg != null ? `, азимут ${Math.round(t.bearing_deg)}°` : "";
+        const l1 = [`${fmtM(t.distance_m)}, ${fmtAng(t.angle_deg)}`, `600 14px ${css("--font")}`], l2 = [kindText(t.detection_class) + b, `12px ${css("--font")}`];
+        const r = place(x, y, [l1, l2], true);
+        ctx.font = l1[1]; ctx.fillStyle = INK; ctx.fillText(l1[0], r.x, r.y);
+        ctx.font = l2[1]; ctx.fillStyle = MUTED; ctx.fillText(l2[0], r.x, r.y + 18);
+      } else {
+        ctx.strokeStyle = MUTED; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
+        const l = [`проверка ${Math.round(t.hit_ratio * 100)}%`, `12px ${css("--font")}`];
+        const r = place(x, y, [l], false);         // нет места — без подписи
+        if (r) { ctx.font = l[1]; ctx.fillStyle = MUTED; ctx.fillText(l[0], r.x, r.y + 2); }
+      }
+    }
+    ctx.textBaseline = "middle";
+    if (tr.learning_background) overlay(ctx, w, h, "Запоминаю фон", "в зоне радара никого не должно быть", WARN);
+    c.setAttribute("aria-label", `Устройство ${d.id}: людей ${tr.targets.filter(t => t.confirmed).length}, целей на проверке ${tr.targets.filter(t => !t.confirmed).length}`);
+  } else {
+    d.trails.clear();
+    overlay(ctx, w, h, d.info.online === false ? "Устройство не на связи" : "Нет данных радара", "картинка обновится, когда данные пойдут", MUTED);
+  }
+}
+
+function overlay(ctx, w, h, title, sub, color) {
+  ctx.fillStyle = "rgba(30,40,51,0.72)"; ctx.fillRect(0, 0, w, h);
+  ctx.textAlign = "center"; ctx.fillStyle = color;
+  ctx.font = `600 17px ${css("--font")}`; ctx.fillText(title, w / 2, h / 2 - 10);
+  ctx.font = `13px ${css("--font")}`; ctx.fillStyle = css("--muted"); ctx.fillText(sub, w / 2, h / 2 + 14);
+}
+
+function frame(now) {
+  const t = Date.now();
+  devices.forEach(d => { draw(d, t); drawPath(d); });
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- тревоги ----------
+function liveTarget(d) {               // самая надёжная подтверждённая цель сейчас
+  const tr = d.tracks;
+  if (!tr || Date.now() - d.tracksRx > STALE_MS) return null;
+  return tr.targets.filter(t => t.confirmed).sort((a, b) => b.hit_ratio - a.hit_ratio)[0] || null;
+}
+
+function renderBanner() {
+  const active = [...devices.values()].filter(d => d.alarm);
+  const bar = document.getElementById("alarmbar");
+  bar.classList.toggle("on", active.length > 0);
+  if (!active.length) return;
+  const d = active[0], a = d.alarm, t = liveTarget(d);
+  const heading = d.status && d.status.heading_deg != null ? d.status.heading_deg : a.radar_heading_deg;
+  const dist = t ? t.distance_m : a.distance_m, ang = t ? t.angle_deg : a.angle_deg, kind = t ? t.detection_class : a.detection_class;
+  const bearing = heading != null ? wrap(heading + ang) : null;
+  const people = t ? d.tracks.targets.filter(x => x.confirmed).length : a.people;
+  const more = active.length > 1 ? `, ещё устройств с тревогой: ${active.length - 1}` : "";
+  const big = `Человек ${kindText(kind)}: ${dist != null ? fmtM(dist) : "?"} от устройства ${a.device_id}` +
+    (bearing != null ? `, азимут ${Math.round(bearing)}° ${rumb(bearing)}` : `, угол ${fmtAng(ang)} от оси радара`);
+  const sub = (people > 1 ? `Людей в зоне: ${people}. ` : "") + (t ? "" : "Сейчас радар его не видит, показано последнее. ") +
+    (a.target_position ? `<a href="${mapUrl(a.target_position)}" target="_blank" rel="noopener">Открыть точку первого обнаружения на карте</a>` : "Точки на карте нет: нужны GPS и компас") + more;
+  const el = document.getElementById("alarmbig");
+  if (el.textContent !== big) el.textContent = big;
+  const sl = document.getElementById("alarmsub");
+  if (sl.innerHTML !== sub) sl.innerHTML = sub;
+}
+
+function renderAlarms() {
+  renderBanner();
+  const j = document.getElementById("journal");
+  if (!alarms.length) { j.innerHTML = '<li class="none">Тревог не было.</li>'; return; }
+  j.innerHTML = alarms.map(a => `
+    <li class="${a.active ? "" : "cleared"}">
+      <div class="when">${clock(a.detected_at)}, устройство ${a.device_id}${a.cleared_at ? `, снята в ${clock(a.cleared_at)}` : ""}</div>
+      <div class="what">Человек ${kindText(a.detection_class)}${a.distance_m != null ? ", " + fmtM(a.distance_m) : ""}, ${fmtAng(a.angle_deg)} от оси</div>
+      ${a.bearing_deg != null ? `<div>Азимут ${Math.round(a.bearing_deg)}° ${rumb(a.bearing_deg)}</div>` : ""}
+      ${a.target_position ? `<div><a href="${mapUrl(a.target_position)}" target="_blank" rel="noopener">Точка на карте</a></div>` : ""}
+    </li>`).join("");
+}
+
+// ---------- поток событий (GET /api/v1/events) ----------
+const facts = d => { renderFacts(d); d._factsAt = Date.now(); };
+
+function onSnapshot(snap) {
+  alarms = snap.alarms;
+  for (const dev of snap.devices) {
+    const d = card(dev.id);
+    d.info = dev; d.status = dev.status;
+    d.alarm = dev.active_alarm_id ? alarms.find(a => a.id === dev.active_alarm_id) || null : null;
+  }
+  for (const tr of snap.tracks) { const d = card(tr.device_id); d.tracks = tr; d.tracksRx = Date.now(); }
+  devices.forEach(facts);
+  renderAlarms();
+}
+
+function onAlarm(a) {
+  const d = card(a.device_id);
+  const i = alarms.findIndex(x => x.id === a.id);
+  if (i >= 0) alarms[i] = a; else { alarms.unshift(a); alarms = alarms.slice(0, 100); }
+  if (a.active) { d.alarm = a; if (i < 0) beep(); }
+  else if (d.alarm && d.alarm.id === a.id) d.alarm = null;
+  facts(d);
+  renderAlarms();
+}
+
+function connect() {
+  const es = new EventSource(`${API}/events`);
+  const dot = document.getElementById("linkdot"), txt = document.getElementById("linktext");
+  const on = (name, fn) => es.addEventListener(name, e => fn(JSON.parse(e.data)));
+  es.onopen = () => { dot.className = "dot on"; txt.textContent = "Сервер на связи"; };
+  es.onerror = () => { dot.className = "dot off"; txt.textContent = "Нет связи с сервером, переподключаюсь"; };
+  on("snapshot", onSnapshot);
+  on("device", dev => { const d = card(dev.id); d.info = dev; facts(d); });
+  on("status", ev => { const d = card(ev.device_id); d.status = ev.status; facts(d); });
+  on("tracks", tr => {
+    const d = card(tr.device_id); d.tracks = tr; d.tracksRx = Date.now();
+    if (!d._factsAt || Date.now() - d._factsAt > 1000) facts(d);
+    if (d.alarm) renderBanner();
+  });
+  on("alarm", onAlarm);
+  on("path", ev => { card(ev.device_id).path.push(ev.point); });
+}
+connect();
+</script>
+</body>
+</html>

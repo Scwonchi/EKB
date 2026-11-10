@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+// Сообщение запрос на подключение
+message Syn {
+  // MAC адресс устройства в качестве уникального идентификатора
+  bytes mac = 1;
+  // Список оборудования на боруту
+  repeated OnboardDevice onboards = 2;
+  // Описание оборудования на борту
+  message OnboardDevice {
+    // Тип (название: "camera", "thermal" и тп)
+    string name = 1;
+    // URL для подключения к нему
+    string url = 2;
+  }
+}
+
+// Ответ сервера на подключение
+message Ack {
+  // статус-код (0 - успешно, иначе - ошибка и закрытие TCP-соединения)
+  int64 code = 1;
+}

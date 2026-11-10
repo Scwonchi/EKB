@@ -1,0 +1,26 @@
+lint:
+  use:
+    - MINIMAL
+    - BASIC
+    - DEFAULT
+  enum_zero_value_suffix: UNSPECIFIED
+
+breaking:
+  against_git_ref: main
+  use:
+    - FILE
+
+generate:
+  inputs:
+    - directory:
+        path: .
+        root: proto
+  plugins:
+    # C для ESP32 (nanopb). Нужен protoc-gen-nanopb в PATH: pip install nanopb
+    - name: nanopb
+      out: esp/libraries/TelemetryProto/src
+      opts:
+        --options-path: proto     # где искать *.options (размеры строк и массивов)
+    # Python для сервера (встроенный в easyp генератор)
+    - name: python
+      out: server/gen

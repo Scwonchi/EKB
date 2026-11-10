@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Сборка: colcon (ровер), программы на ПК, Arduino
+build/
+install/
+log/
+*.o
+*.elf
+*.bin
+radar_nn/tools/scout_sim
+radar_nn/tools/track_data
+radar_nn/tools/odom_test
+radar_nn/tools/capsule_sim
+telemetry/tools/codec_test
+telemetry/tools/fake_device
+
+# Журналы и записи с площадки (выкладывать осознанно, не случайно)
+*.log
+telemetry/alarms.jsonl
+records/
+
+# Редакторы и ОС
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Локальные секреты: пароли Wi-Fi, ключи
+secrets.h
+*.env
+.env

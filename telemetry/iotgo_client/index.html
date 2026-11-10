@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Трек дронов — iot-go</title>
+<style>
+:root {
+  --ground: #1e2833; --panel: #263240; --panel-2: #2d3b4b; --line: #3e4f62;
+  --ink: #e8eef3; --muted: #93a4b4; --rescue: #ff7a1a; --ok: #5fc9a8; --warn: #f2c14e;
+  --font: "Bahnschrift", "DIN 2014", "Barlow", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--font); }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.link { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.on { background: var(--ok); } .dot.off { background: var(--warn); }
+main { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 16px; padding: 16px; }
+.empty { color: var(--muted); max-width: 62ch; line-height: 1.45; }
+.empty strong { color: var(--ink); }
+.dev { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.dev.alarm { border-color: var(--rescue); box-shadow: inset 0 0 0 1px var(--rescue); }
+.dev.offline { opacity: .6; }
+.head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 12px 14px 6px; }
+.name { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.state { font-size: 14px; color: var(--muted); }
+.state.alarm { color: var(--rescue); font-weight: 600; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 0 14px 10px; font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.facts .bad b { color: var(--warn); }
+canvas { display: block; width: 100%; aspect-ratio: 1 / 1; background: var(--ground); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.foot { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px 12px; }
+.btn { font: inherit; font-size: 14px; color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+:focus-visible { outline: 2px solid var(--warn); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Трек дронов</h1>
+  <span class="link"><span id="dot" class="dot"></span><span id="linktext">Подключаюсь к iot-go</span></span>
+</header>
+<main id="devices">
+  <p class="empty" id="nodev"><strong>Устройств пока нет.</strong><br>
+    Страница берёт данные у iot-go: список устройств и поток снимков каждого. Трек рисуется из
+    координат (<code>position</code>) и курса (<code>heading_deg</code>) в снимках. У разведчика в помещении это
+    точка старта (команда <code>home</code>) плюс поворот по гироскопу и сдвиг (<code>move</code>).</p>
+</main>
+<script>
+"use strict";
+const API = "/api/v1";
+const STEP_M = 0.2, TURN_DEG = 15, MAX_PTS = 5000;
+const K = 111195;                                  // метров в градусе широты
+const devs = new Map();
+const nf1 = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const fmtM = v => nf1.format(v) + " м";
+const wrap = a => ((a % 360) + 360) % 360;
+const rumb = a => ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"][Math.round(wrap(a) / 45) % 8];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* без памяти браузера — трек до перезагрузки */ } },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
+
+// Точка на расстоянии dist по азимуту bearing (для десятков метров плоская Земля точна)
+function offset(p, bearing, dist) {
+  const b = bearing * Math.PI / 180;
+  return { lat: p.lat + dist * Math.cos(b) / K, lon: p.lon + dist * Math.sin(b) / (K * Math.cos(p.lat * Math.PI / 180)) };
+}
+
+// ---------- устройство ----------
+function device(info) {
+  let d = devs.get(info.id);
+  if (d) { d.info = info; return d; }
+  document.getElementById("nodev").style.display = "none";
+  const el = document.createElement("article");
+  el.className = "dev";
+  el.innerHTML = `<div class="head"><span class="name"></span><span class="state"></span></div>
+    <div class="facts"></div><canvas role="img" aria-label="Трек устройства"></canvas>
+    <div class="foot"><button class="btn dl">Скачать трек (GeoJSON)</button><button class="btn clr">Очистить трек</button></div>`;
+  document.getElementById("devices").appendChild(el);
+  const saved = store.get("trk:" + info.id) || {};
+  d = { info, el, canvas: el.querySelector("canvas"), ws: null, last: null, rx: 0, online: true,
+        pts: saved.pts || [], people: saved.people || [], yaw: saved.yaw || 0, turned: saved.turned || 0, prevH: null };
+  el.querySelector(".name").textContent = info.name || info.id;
+  el.querySelector(".dl").addEventListener("click", () => download(d));
+  el.querySelector(".clr").addEventListener("click", () => {
+    d.pts = []; d.people = []; d.yaw = 0; d.turned = 0; d.prevH = null; store.del("trk:" + d.info.id);
+  });
+  devs.set(info.id, d);
+  return d;
+}
+
+function save(d) {
+  if (Date.now() - (d._saved || 0) < 2000) return;
+  d._saved = Date.now();
+  store.set("trk:" + d.info.id, { pts: d.pts, people: d.people, yaw: d.yaw, turned: d.turned });
+}
+
+// Снимок от iot-go (JSON по WebSocket): копим трек, поворот и людей
+function onSnapshot(d, s) {
+  d.last = s; d.rx = Date.now();
+  const h = s.heading_valid && s.heading_deg != null ? s.heading_deg : null;
+  if (h != null) {
+    if (d.prevH != null) { const dh = ((h - d.prevH + 540) % 360) - 180; d.yaw += dh; d.turned += Math.abs(dh); }
+    d.prevH = h;
+  }
+  if (s.position) {
+    const p = { lat: s.position.lat, lon: s.position.lon, h, t: Date.now() };
+    const q = d.pts.at(-1);
+    const moved = q ? Math.hypot((p.lat - q.lat) * K, (p.lon - q.lon) * K * Math.cos(p.lat * Math.PI / 180)) : Infinity;
+    const turn = q && h != null && q.h != null ? Math.abs(((h - q.h + 540) % 360) - 180) : 0;
+    if (moved >= STEP_M || turn >= TURN_DEG) { d.pts.push(p); if (d.pts.length > MAX_PTS) d.pts.shift(); }
+    // Подтверждённые люди: точка дрона + азимут (курс + угол цели) + дистанция
+    if (h != null)
+      for (const t of s.tracks || []) {
+        if (!t.confirmed) continue;
+        const m = offset(p, h + t.angle_deg, t.distance_m);
+        const near = d.people.find(x => Math.hypot((x.lat - m.lat) * K, (x.lon - m.lon) * K * Math.cos(m.lat * Math.PI / 180)) < 1.0);
+        if (near) { near.lat += 0.2 * (m.lat - near.lat); near.lon += 0.2 * (m.lon - near.lon); near.t = Date.now(); }
+        else d.people.push({ lat: m.lat, lon: m.lon, cls: t.detection_class, t: Date.now() });
+      }
+    save(d);
+  }
+}
+
+function connectWs(d) {
+  if (d.ws) return;
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${API}/devices/${encodeURIComponent(d.info.id)}`);
+  d.ws = ws;
+  ws.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch (err) { return; }
+    if (m.error) { d.err = m.error; return; }
+    onSnapshot(d, m);
+  };
+  ws.onclose = () => { d.ws = null; };
+}
+
+// Список устройств iot-go раз в 2 с: новые — подписаться, пропавшие — «не на связи»
+async function poll() {
+  const dot = document.getElementById("dot"), txt = document.getElementById("linktext");
+  try {
+    const r = await fetch(`${API}/devices`, { cache: "no-store" });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    dot.className = "dot on"; txt.textContent = `iot-go на связи, устройств ${j.total}`;
+    const ids = new Set(j.devices.map(x => x.id));
+    for (const info of j.devices) { const d = device(info); d.online = true; connectWs(d); }
+    devs.forEach(d => { if (!ids.has(d.info.id)) d.online = false; });
+  } catch (e) {
+    dot.className = "dot off"; txt.textContent = "Нет связи с iot-go (iotgo_view.py запущен? адрес --iotgo?)";
+  }
+  setTimeout(poll, 2000);
+}
+poll();
+
+// ---------- рисование ----------
+function facts(d) {
+  const s = d.last, f = [];
+  const fresh = s && Date.now() - d.rx < 3000;
+  if (s) {
+    f.push(s.radar_ok ? ["Радар", "работает"] : ["Радар", "нет данных", 1]);
+    f.push(s.position ? [s.satellites ? "GPS" : "Место", s.satellites ? `${s.satellites} спутн.` : "по одометрии"] : ["Место", "нет координат", 1]);
+    f.push(s.heading_valid && s.heading_deg != null ? ["Курс", `${Math.round(s.heading_deg)}° ${rumb(s.heading_deg)}`] : ["Курс", "нет", 1]);
+  }
+  let len = 0;
+  for (let i = 1; i < d.pts.length; i++) {
+    const a = d.pts[i - 1], b = d.pts[i];
+    len += Math.hypot((b.lat - a.lat) * K, (b.lon - a.lon) * K * Math.cos(b.lat * Math.PI / 180));
+  }
+  f.push(["Пройдено", fmtM(len)]);
+  if (d.pts.length) {
+    const a = d.pts[0], b = d.pts.at(-1);
+    f.push(["От старта", fmtM(Math.hypot((b.lat - a.lat) * K, (b.lon - a.lon) * K * Math.cos(b.lat * Math.PI / 180)))]);
+  }
+  f.push(["Повернулся", `${d.yaw >= 0 ? "+" : "−"}${Math.abs(Math.round(d.yaw))}° (${nf1.format(Math.abs(d.yaw) / 360)} об.)`]);
+  if (d.people.length) f.push(["Людей на треке", d.people.length]);
+  const html = f.map(([k, v, bad]) => `<span class="${bad ? "bad" : ""}">${k}: <b>${v}</b></span>`).join("");
+  const el = d.el.querySelector(".facts");
+  if (el._h !== html) { el.innerHTML = html; el._h = html; }
+  const alarm = fresh && s.alarm_active;
+  d.el.classList.toggle("alarm", !!alarm);
+  d.el.classList.toggle("offline", !d.online || !fresh);
+  const st = d.el.querySelector(".state");
+  st.className = "state" + (alarm ? " alarm" : "");
+  st.textContent = d.err ? d.err : !d.online ? "отключилось" : !fresh ? "нет снимков" : alarm ? "человек обнаружен" : "поиск";
+}
+
+function draw(d) {
+  const c = d.canvas, ctx = c.getContext("2d");
+  const w = c.clientWidth, h = c.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const LINE = css("--line"), MUTED = css("--muted"), INK = css("--ink"), RESCUE = css("--rescue"), OK = css("--ok");
+  ctx.font = `13px ${css("--font")}`;
+  if (!d.pts.length) {
+    ctx.fillStyle = MUTED; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("Нет координат: на разведчике задайте точку старта (home)", w / 2, h / 2);
+    ctx.textAlign = "left";
+    return;
+  }
+  const p0 = d.pts[0], cl = Math.cos(p0.lat * Math.PI / 180);
+  const xy = p => [(p.lon - p0.lon) * K * cl, (p.lat - p0.lat) * K];
+  const pts = d.pts.map(xy), ppl = d.people.map(xy);
+  const all = pts.concat(ppl);
+  const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const span = Math.max(x1 - x0, y1 - y0, 4), pad = 28;
+  const sc = Math.min((w - 2 * pad) / span, (h - 2 * pad) / span), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const X = x => w / 2 + (x - cx) * sc, Y = y => h / 2 - (y - cy) * sc;
+  const step = span > 25 ? 5 : 1;
+  ctx.strokeStyle = LINE; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+  for (let g = Math.ceil((cx - w / 2 / sc) / step) * step; X(g) < w; g += step) { ctx.beginPath(); ctx.moveTo(X(g), 0); ctx.lineTo(X(g), h); ctx.stroke(); }
+  for (let g = Math.ceil((cy - h / 2 / sc) / step) * step; Y(g) > 0; g += step) { ctx.beginPath(); ctx.moveTo(0, Y(g)); ctx.lineTo(w, Y(g)); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = MUTED; ctx.textBaseline = "top"; ctx.fillText(`сетка ${step} м · север вверху`, 8, 6);
+  ctx.strokeStyle = OK; ctx.lineWidth = 2.5; ctx.lineJoin = "round";
+  ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y))); ctx.stroke();
+  ctx.fillStyle = INK; ctx.beginPath(); ctx.arc(X(pts[0][0]), Y(pts[0][1]), 4, 0, 7); ctx.fill();
+  ctx.textBaseline = "bottom"; ctx.fillText("старт", X(pts[0][0]) + 7, Y(pts[0][1]) - 3);
+  for (const [x, y] of ppl) { ctx.fillStyle = RESCUE; ctx.beginPath(); ctx.arc(X(x), Y(y), 6, 0, 7); ctx.fill(); }
+  // Текущие цели радара (неподтверждённые — серым)
+  const s = d.last, cur = d.pts.at(-1);
+  if (s && Date.now() - d.rx < 3000 && cur.h != null)
+    for (const t of s.tracks || []) {
+      if (t.confirmed) continue;
+      const [tx, ty] = xy(offset(cur, cur.h + t.angle_deg, t.distance_m));
+      ctx.fillStyle = MUTED; ctx.beginPath(); ctx.arc(X(tx), Y(ty), 3, 0, 7); ctx.fill();
+    }
+  const [lx, ly] = pts.at(-1), hd = s && s.heading_valid ? s.heading_deg : cur.h;
+  ctx.save(); ctx.translate(X(lx), Y(ly)); ctx.rotate(((hd ?? 0) * Math.PI) / 180);
+  ctx.fillStyle = hd == null ? MUTED : INK;
+  ctx.beginPath(); ctx.moveTo(0, -12); ctx.lineTo(8, 8); ctx.lineTo(0, 3); ctx.lineTo(-8, 8); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+function download(d) {
+  const gj = { type: "FeatureCollection", features: [
+    { type: "Feature", properties: { device: d.info.name || d.info.id, kind: "track" },
+      geometry: { type: "LineString", coordinates: d.pts.map(p => [p.lon, p.lat]) } },
+    ...d.people.map(p => ({ type: "Feature", properties: { kind: "person", class: p.cls, seen: new Date(p.t).toISOString() },
+      geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
+  ] };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(gj, null, 1)], { type: "application/geo+json" }));
+  a.download = `track_${(d.info.name || d.info.id).replace(/[^\w.-]+/g, "_")}.geojson`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function frame() { devs.forEach(d => { facts(d); draw(d); }); requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

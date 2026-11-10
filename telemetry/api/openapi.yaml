@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: API системы поиска людей
+  version: "1.0"
+  summary: Устройства с радаром, тревоги и цели — для страниц операторов и сторонних клиентов (только чтение).
+  description: |
+    API отдаёт сервер, к которому подключены устройства с радаром LD2450
+    (протокол устройств — docs/device-protocol.md). Эталонная реализация —
+    server/server.py; любой другой сервер, реализующий этот файл, совместим
+    со страницей оператора и другими клиентами.
+
+    Общие правила:
+    - Все ответы — JSON в UTF-8, имена полей в snake_case, единицы измерения в имени
+      поля (`distance_m`, `angle_deg`, `speed_mps`).
+    - Время — строка ISO 8601 в UTC с миллисекундами, например `2026-10-20T10:15:30.125Z`.
+    - Идентификатор устройства назначает сервер (в протоколе устройств его нет).
+      Эталонный сервер использует IP-адрес устройства, например `192.168.4.2`;
+      клиенты должны считать идентификатор непрозрачной строкой.
+    - Тревоги сервер выводит из снимков устройства: признак `alarm_active` стал
+      `true` — новая тревога, стал `false` — тревога снята.
+    - Команд устройствам нет: протокол устройств односторонний.
+    - Углы: `angle_deg` — от оси радара, плюс по часовой стрелке (вправо);
+      `bearing_deg` и `heading_deg` — азимут от истинного севера, 0–360, по часовой.
+      Поле, которое нельзя вычислить (нет GPS или компаса), равно `null`, а не пропущено.
+    - Заголовки CORS разрешают запросы с любого источника: клиента можно размещать
+      на другом веб-сервере.
+    - Ошибки — объект `Error` с машинным кодом и сообщением для человека.
+    - Новые поля могут добавляться без смены версии; клиенты должны игнорировать
+      незнакомые поля. Удаление или переименование полей — только в `/api/v2`.
+
+    Живые данные: поток `GET /api/v1/events` (Server-Sent Events). Первым событием
+    приходит `snapshot` с полным состоянием, дальше — изменения. После переподключения
+    снова приходит `snapshot`, поэтому номер последнего события (`Last-Event-ID`)
+    сервер не учитывает.
+  license:
+    name: Только для участников проекта
+servers:
+  - url: http://localhost:8080
+    description: Эталонный сервер на этом компьютере
+tags:
+  - name: Сервер
+  - name: Устройства
+  - name: Тревоги
+  - name: События
+
+paths:
+  /api/v1/info:
+    get:
+      tags: [Сервер]
+      operationId: getInfo
+      summary: Версия API и время сервера
+      responses:
+        "200":
+          description: Сведения о сервере
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Info" }
+
+  /api/v1/devices:
+    get:
+      tags: [Устройства]
+      operationId: listDevices
+      summary: Все известные серверу устройства
+      description: Устройство остаётся в списке после отключения (`online = false`) до перезапуска сервера.
+      responses:
+        "200":
+          description: Список устройств
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+
+  /api/v1/devices/{device_id}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [Устройства]
+      operationId: getDevice
+      summary: Одно устройство
+      responses:
+        "200":
+          description: Устройство
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { $ref: "#/components/responses/DeviceNotFound" }
+
+  /api/v1/devices/{device_id}/tracks:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [Устройства]
+      operationId: getTracks
+      summary: Последние цели радара устройства
+      description: |
+        Устройство присылает снимки около 5 раз в секунду. Для живой картинки удобнее
+        поток событий `tracks`, а этот запрос — для разовой проверки.
+      responses:
+        "200":
+          description: Цели
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tracks" }
+        "404":
+          description: Устройство не известно (`device_not_found`) или снимков от него ещё не было (`no_data`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/devices/{device_id}/path:
+    parameters:
+      - $ref: "#/components/parameters/DeviceId"
+    get:
+      tags: [Устройства]
+      operationId: getPath
+      summary: Трек передвижения устройства
+      description: |
+        Точки `position` из снимков устройства с момента запуска сервера: новая точка — когда
+        устройство сдвинулось на 0,2 м или повернулось на 15°, не больше 5000 точек. У разведчика
+        в помещении `position` — точка старта плюс одометрия (поворот по гироскопу, сдвиг —
+        от источника перемещения), а не GPS. Новые точки приходят событием `path`.
+      responses:
+        "200":
+          description: Трек (пустой, если устройство не присылало `position`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Path" }
+        "404":
+          description: Устройство не известно (`device_not_found`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/alarms:
+    get:
+      tags: [Тревоги]
+      operationId: listAlarms
+      summary: Журнал тревог, новые первыми
+      parameters:
+        - name: active
+          in: query
+          description: "`true` — только активные, `false` — только снятые; без параметра — все."
+          schema: { type: boolean }
+        - name: limit
+          in: query
+          description: Сколько тревог вернуть.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Тревоги
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alarms]
+                properties:
+                  alarms:
+                    type: array
+                    items: { $ref: "#/components/schemas/Alarm" }
+        "400":
+          description: Неверный `limit` (`bad_request`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/events:
+    get:
+      tags: [События]
+      operationId: streamEvents
+      summary: Поток событий (Server-Sent Events)
+      description: |
+        Формат — стандарт Server-Sent Events: у каждого события есть имя (`event:`),
+        номер (`id:`) и данные (`data:`, одна строка JSON). Каждые 15 с без событий
+        приходит комментарий `: keep-alive`.
+
+        | Событие | Данные | Когда |
+        |---|---|---|
+        | `snapshot` | `Snapshot` | сразу после подключения |
+        | `device` | `Device` | устройство подключилось или отключилось |
+        | `status` | `StatusEvent` | не чаще раза в секунду на устройство (по снимкам) |
+        | `tracks` | `Tracks` | на каждый снимок, около 5 раз в секунду на устройство |
+        | `alarm` | `Alarm` | новая тревога (`active = true`) или тревога снята (`active = false`) |
+        | `path` | `PathEvent` | новая точка трека устройства (сдвиг 0,2 м или поворот 15°) |
+
+        Пример в браузере:
+        ```js
+        const es = new EventSource("http://localhost:8080/api/v1/events");
+        es.addEventListener("snapshot", e => init(JSON.parse(e.data)));
+        es.addEventListener("alarm", e => showAlarm(JSON.parse(e.data)));
+        ```
+      responses:
+        "200":
+          description: Бесконечный поток событий
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Последовательность событий SSE; данные событий описаны схемами из `x-sse-events`.
+      x-sse-events:
+        snapshot: { $ref: "#/components/schemas/Snapshot" }
+        device: { $ref: "#/components/schemas/Device" }
+        status: { $ref: "#/components/schemas/StatusEvent" }
+        tracks: { $ref: "#/components/schemas/Tracks" }
+        alarm: { $ref: "#/components/schemas/Alarm" }
+        path: { $ref: "#/components/schemas/PathEvent" }
+
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      description: Идентификатор устройства, назначенный сервером (у эталонного сервера — MAC или IP-адрес).
+      schema: { $ref: "#/components/schemas/DeviceId" }
+
+  responses:
+    DeviceNotFound:
+      description: Устройство не известно серверу (`device_not_found`)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    DeviceId:
+      type: string
+      minLength: 1
+      description: Назначает сервер; непрозрачная строка. Эталонный сервер — MAC из `Syn`, у старых прошивок — IP-адрес.
+      examples: ["02:11:22:33:44:55", "192.168.4.2"]
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: ISO 8601, UTC.
+      examples: ["2026-10-20T10:15:30.125Z"]
+
+    GeoPoint:
+      type: object
+      required: [lat, lon]
+      properties:
+        lat: { type: number, minimum: -90, maximum: 90, description: "Широта, градусы, + север." }
+        lon: { type: number, minimum: -180, maximum: 180, description: "Долгота, градусы, + восток." }
+
+    DetectionClass:
+      type: string
+      enum: [unspecified, empty, moving, stationary, interference]
+      description: |
+        `moving` — человек движется, `stationary` — неподвижен (сидит, лежит),
+        `empty` — людей нет, `interference` — помеха, `unspecified` — не определено
+        (например, цель ещё проверяется).
+
+    Info:
+      type: object
+      required: [api_version, server_time]
+      properties:
+        api_version: { type: string, examples: ["1.0"] }
+        server_time: { $ref: "#/components/schemas/Timestamp" }
+
+    Device:
+      type: object
+      required: [id, online, address, firmware_version, connected_at, status, active_alarm_id]
+      properties:
+        id: { $ref: "#/components/schemas/DeviceId" }
+        online: { type: boolean, description: "Устройство сейчас подключено к серверу." }
+        address: { type: [string, "null"], description: "IP-адрес устройства (в сети шлюза — 192.168.4.x)." }
+        firmware_version: { type: [integer, "null"], description: "Версия прошивки из последнего снимка." }
+        connected_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        status:
+          oneOf:
+            - $ref: "#/components/schemas/Status"
+            - type: "null"
+          description: Состояние из последнего снимка; `null`, пока снимков не было.
+        active_alarm_id:
+          type: [string, "null"]
+          description: Идентификатор активной тревоги этого устройства (см. `Alarm.id`).
+        mac:
+          type: [string, "null"]
+          description: MAC из `Syn` («02:11:22:33:44:55»); `null` — устройство старого протокола без `Syn`.
+          examples: ["02:11:22:33:44:55"]
+        onboards:
+          type: array
+          description: Оборудование на борту из `Syn` последнего подключения (камера и её адрес).
+          items:
+            type: object
+            required: [name, url]
+            properties:
+              name: { type: string, examples: ["camera"] }
+              url: { type: string, examples: ["http://192.168.1.50:81/stream"] }
+
+    Status:
+      type: object
+      required: [received_at, uptime_s, radar_ok, people, detection_class, person_probability,
+                 position, satellites, hdop, heading_deg, wifi_rssi_dbm, alarm_active]
+      properties:
+        received_at: { $ref: "#/components/schemas/Timestamp" }
+        uptime_s: { type: integer, minimum: 0, description: "Время работы устройства, с." }
+        radar_ok: { type: boolean, description: "Радар присылает данные." }
+        people: { type: integer, minimum: 0, description: "Подтверждённых людей в зоне радара." }
+        detection_class: { $ref: "#/components/schemas/DetectionClass" }
+        person_probability: { type: number, minimum: 0, maximum: 1 }
+        position:
+          oneOf:
+            - $ref: "#/components/schemas/GeoPoint"
+            - type: "null"
+          description: Координаты устройства по GPS; `null` — нет фиксации.
+        satellites: { type: integer, minimum: 0 }
+        hdop: { type: [number, "null"], description: "Геометрический фактор точности GPS; меньше — точнее." }
+        heading_deg:
+          type: [number, "null"]
+          description: Азимут оси радара по компасу; `null` — компас не откалиброван или помеха.
+        wifi_rssi_dbm: { type: integer, description: "Сила сигнала Wi-Fi устройства, дБм." }
+        alarm_active: { type: boolean, description: "Признак тревоги в последнем снимке устройства." }
+
+    PathPoint:
+      type: object
+      required: [t, lat, lon, heading_deg]
+      properties:
+        t: { $ref: "#/components/schemas/Timestamp" }
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lon: { type: number, minimum: -180, maximum: 180 }
+        heading_deg:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 360
+          description: Куда смотрит устройство (азимут); `null` — курс неизвестен.
+
+    Path:
+      type: object
+      required: [device_id, points]
+      properties:
+        device_id: { $ref: "#/components/schemas/DeviceId" }
+        points: { type: array, items: { $ref: "#/components/schemas/PathPoint" }, description: "От старых к новым." }
+
+    PathEvent:
+      type: object
+      required: [device_id, point]
+      properties:
+        device_id: { $ref: "#/components/schemas/DeviceId" }
+        point: { $ref: "#/components/schemas/PathPoint" }
+
+    StatusEvent:
+      type: object
+      required: [device_id, status]
+      properties:
+        device_id: { $ref: "#/components/schemas/DeviceId" }
+        status: { $ref: "#/components/schemas/Status" }
+
+    Target:
+      type: object
+      required: [id, distance_m, angle_deg, bearing_deg, speed_mps, confirmed, detection_class, hit_ratio]
+      properties:
+        id: { type: integer, description: "Номер цели; сохраняется, пока цель видна. Удобен для рисования следа." }
+        distance_m: { type: number, minimum: 0, description: "Дистанция от радара, м (до ~6 м)." }
+        angle_deg: { type: number, minimum: -90, maximum: 90, description: "Угол от оси радара, + по часовой." }
+        bearing_deg: { type: [number, "null"], minimum: 0, maximum: 360, description: "Азимут на цель; `null` без компаса." }
+        speed_mps: { type: number, minimum: 0, description: "Модуль скорости, м/с." }
+        confirmed: { type: boolean, description: "`true` — подтверждено, что это человек; `false` — цель ещё проверяется." }
+        detection_class: { $ref: "#/components/schemas/DetectionClass" }
+        hit_ratio: { type: number, minimum: 0, maximum: 1, description: "Доля кадров, в которых цель видна." }
+
+    Tracks:
+      type: object
+      required: [device_id, received_at, learning_background, background_cells, targets]
+      properties:
+        device_id: { $ref: "#/components/schemas/DeviceId" }
+        received_at: { $ref: "#/components/schemas/Timestamp" }
+        learning_background:
+          type: boolean
+          description: Устройство запоминает фон (20 с); цели в это время не выдаются.
+        background_cells: { type: integer, minimum: 0, description: "Сколько клеток 25×25 см помечено как фон." }
+        targets:
+          type: array
+          maxItems: 6
+          items: { $ref: "#/components/schemas/Target" }
+
+    Alarm:
+      type: object
+      required: [id, device_id, alarm_number, active, detected_at, cleared_at, detection_class, confidence,
+                 people, distance_m, angle_deg, radar_heading_deg, bearing_deg, device_position, target_position]
+      properties:
+        id:
+          type: string
+          description: Уникальный идентификатор — устройство и номер тревоги.
+          examples: ["192.168.4.2-3"]
+        device_id: { $ref: "#/components/schemas/DeviceId" }
+        alarm_number: { type: integer, minimum: 1, description: "Номер тревоги этого устройства на сервере; начинается с 1 при запуске сервера." }
+        active: { type: boolean }
+        detected_at:
+          $ref: "#/components/schemas/Timestamp"
+          description: Когда сервер получил первый снимок с `alarm_active = true`.
+        cleared_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+        detection_class: { $ref: "#/components/schemas/DetectionClass" }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        people: { type: integer, minimum: 0, description: "Людей в зоне в момент тревоги." }
+        distance_m:
+          type: [number, "null"]
+          description: |
+            Дистанция до самой надёжной подтверждённой цели в первом снимке тревоги, м;
+            `null`, если подтверждённых целей в снимке не было.
+        angle_deg: { type: number, description: "Угол от оси радара до этой цели, + по часовой (0, если цели нет)." }
+        radar_heading_deg: { type: [number, "null"], description: "Азимут оси радара." }
+        bearing_deg: { type: [number, "null"], description: "Азимут на человека." }
+        device_position:
+          oneOf:
+            - $ref: "#/components/schemas/GeoPoint"
+            - type: "null"
+        target_position:
+          oneOf:
+            - $ref: "#/components/schemas/GeoPoint"
+            - type: "null"
+          description: |
+            Оценка точки человека: координаты устройства + дистанция по азимуту. Вычисляет
+            сервер; есть только при GPS, компасе и подтверждённой цели. Точность — несколько метров.
+
+    Snapshot:
+      type: object
+      required: [api_version, server_time, devices, tracks, alarms]
+      properties:
+        api_version: { type: string }
+        server_time: { $ref: "#/components/schemas/Timestamp" }
+        devices:
+          type: array
+          items: { $ref: "#/components/schemas/Device" }
+        tracks:
+          type: array
+          description: Последние цели каждого устройства (если были).
+          items: { $ref: "#/components/schemas/Tracks" }
+        alarms:
+          type: array
+          description: До 100 последних тревог, новые первыми.
+          items: { $ref: "#/components/schemas/Alarm" }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [not_found, device_not_found, no_data, bad_request]
+            message: { type: string, description: "Пояснение для человека; формулировка может меняться." }

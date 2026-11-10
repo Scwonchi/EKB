@@ -1,0 +1,5 @@
+# Размеры для nanopb: MAC — ровно 6 байт, до 4 единиц оборудования на борту
+telemetry.v1.Syn.mac max_size:6 fixed_length:true
+telemetry.v1.Syn.onboards max_count:4
+telemetry.v1.Syn.OnboardDevice.name max_size:24
+telemetry.v1.Syn.OnboardDevice.url max_size:128

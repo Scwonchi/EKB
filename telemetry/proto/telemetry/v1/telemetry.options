@@ -1,0 +1,2 @@
+# Размеры для nanopb (массивы и строки без размера nanopb делает колбэками)
+telemetry.v1.Telemetry.tracks max_count:6
