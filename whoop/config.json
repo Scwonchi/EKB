@@ -1,0 +1,21 @@
+{
+  "_comment": "Настройки программы микродрона. Всё, чего здесь нет, берётся из DEFAULTS в mission.py.",
+
+  "frame_w": 640,
+  "frame_h": 640,
+  "hfov_deg": 90.0,
+  "cam_pitch_deg": 0.0,
+  "person_label": "person",
+  "window_label": "window",
+
+  "pad_height_m": 0.25,
+
+  "rover_host": "",
+  "rover_port": 8770,
+  "beacon_port": 8771,
+
+  "selfcheck_cmd": "drone selfcheck",
+  "detector_cmd": "/usr/opt/tiny_control/yolo_detector /root/config.yaml",
+  "start_detector": true,
+  "rtsp_path": "/h264"
+}

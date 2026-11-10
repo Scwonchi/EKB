@@ -1,0 +1,22 @@
+#!/bin/sh
+# Автозапуск программы микродрона. Положить в /etc/init.d/ и сделать исполняемым:
+#   cp S98ekb_whoop /etc/init.d/ && chmod +x /etc/init.d/S98ekb_whoop
+# Программа сама не взлетает: ждёт от ровера план и разрешение (go).
+DIR=/root/ekb_whoop
+LOG=/tmp/ekb_whoop.log
+case "$1" in
+  start)
+    cd "$DIR" || exit 1
+    # дать системе микродрона (S99tinycontrol и связь с полётным контроллером) подняться
+    (sleep 20; python3 "$DIR/whoop_agent.py" >> "$LOG" 2>&1) &
+    ;;
+  stop)
+    pkill -f whoop_agent.py
+    ;;
+  restart)
+    "$0" stop; sleep 1; "$0" start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"; exit 1
+    ;;
+esac
